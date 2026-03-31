@@ -23,3 +23,11 @@ o mesmo grafo e os mesmos pares de usuários, com medição de tempo, validaçã
 encontrados e comparação de desempenho.
 """
 
+from social_media_graph_gen import generate_social_graph, pick_distinct_users
+
+#teste:
+
+graph = generate_social_graph(100, 6, 42)
+start, end = pick_distinct_users(graph, 42)
+print(graph)
+print(start, end)
