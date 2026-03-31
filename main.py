@@ -23,11 +23,38 @@ o mesmo grafo e os mesmos pares de usuários, com medição de tempo, validaçã
 encontrados e comparação de desempenho.
 """
 
-from social_media_graph_gen import generate_social_graph, pick_distinct_users
+from __future__ import annotations
 
-#teste:
+from benchmark import (
+    format_results_table,
+    plot_scalability_results,
+    run_scalability_benchmark,
+)
 
-graph = generate_social_graph(100, 6, 42)
-start, end = pick_distinct_users(graph, 42)
-print(graph)
-print(start, end)
+
+GRAPH_SIZES = [10000, 25000, 50000, 75000, 100000]
+AVG_FRIENDS = 2
+REPEATS = 5
+SEED = 42
+MAX_WORKERS = 4
+NUM_BLOCKS = 4
+
+
+def main() -> None:
+    results = run_scalability_benchmark(
+        graph_sizes=GRAPH_SIZES,
+        avg_friends=AVG_FRIENDS,
+        repeats=REPEATS,
+        seed=SEED,
+        max_workers=MAX_WORKERS,
+        num_blocks=NUM_BLOCKS,
+    )
+
+    table = format_results_table(results)
+    print(table)
+    print()
+    plot_scalability_results(results)
+
+
+if __name__ == "__main__":
+    main()
