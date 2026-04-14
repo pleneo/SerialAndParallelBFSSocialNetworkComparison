@@ -1,14 +1,15 @@
-"""Versão paralela do BFS via particionamento da fronteira inicial."""
+"""Versão paralela do BFS por expansão de fronteiras em níveis."""
 
 from __future__ import annotations
 
-from collections import deque
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
 from math import ceil
 from typing import Dict, List, Optional
 
 
 Graph = Dict[int, List[int]]
+
+_WORKER_GRAPH: Graph | None = None
 
 
 def parallel_bfs_shortest_path(
@@ -18,94 +19,106 @@ def parallel_bfs_shortest_path(
     max_workers: int = 4,
     num_blocks: int | None = None,
 ) -> Optional[List[int]]:
-    """Busca o menor caminho dividindo os vizinhos iniciais em blocos."""
+    """Retorna o menor caminho usando BFS paralelo sincronizado por níveis."""
     if start not in graph or end not in graph:
         raise ValueError("start e end devem existir no grafo.")
+
+    if max_workers < 1:
+        raise ValueError("max_workers deve ser maior ou igual a 1.")
+
+    if num_blocks is not None and num_blocks < 1:
+        raise ValueError("num_blocks deve ser maior ou igual a 1.")
 
     if start == end:
         return [start]
 
-    neighbors = graph[start]
-    if not neighbors:
-        return None
+    visited = {start}
+    parents = {start: None}
+    frontier = [start]
 
-    if end in neighbors:
-        return [start, end]
+    with ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=_init_worker_graph,
+        initargs=(graph,),
+    ) as executor:
+        while frontier:
+            block_count = num_blocks or min(max_workers, len(frontier))
+            frontier_blocks = _split_into_blocks(frontier, block_count)
 
-    block_count = num_blocks or min(max_workers, len(neighbors))
-    neighbor_blocks = _split_into_blocks(neighbors, block_count)
-    candidate_paths: List[List[int]] = []
+            futures = [
+                executor.submit(_expand_frontier_block, block)
+                for block in frontier_blocks
+                if block
+            ]
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = [
-            executor.submit(_search_block, graph, start, end, block)
-            for block in neighbor_blocks
-            if block
-        ]
+            next_frontier: List[int] = []
+            found_end = False
 
-        for future in as_completed(futures):
-            block_paths = future.result()
-            candidate_paths.extend(block_paths)
+            for future in futures:
+                discovered_edges = future.result()
 
-    if not candidate_paths:
-        return None
+                for parent, neighbor in discovered_edges:
+                    if neighbor in visited:
+                        continue
 
-    return min(candidate_paths, key=len)
+                    visited.add(neighbor)
+                    parents[neighbor] = parent
+                    next_frontier.append(neighbor)
 
+                    if neighbor == end:
+                        found_end = True
 
-def _search_block(
-    graph: Graph,
-    start: int,
-    end: int,
-    first_neighbors: List[int],
-) -> List[List[int]]:
-    """Executa buscas independentes para um subconjunto da primeira fronteira."""
-    paths: List[List[int]] = []
+            if found_end:
+                return _reconstruct_path(parents, end)
 
-    for neighbor in first_neighbors:
-        partial_path = _bfs_with_forced_first_step(graph, start, neighbor, end)
-        if partial_path is not None:
-            paths.append(partial_path)
-
-    return paths
-
-
-def _bfs_with_forced_first_step(
-    graph: Graph,
-    start: int,
-    first_neighbor: int,
-    end: int,
-) -> Optional[List[int]]:
-    """Força o primeiro salto start -> first_neighbor e continua a busca."""
-    if first_neighbor == end:
-        return [start, end]
-
-    queue = deque([[first_neighbor]])
-    visited = {start, first_neighbor}
-
-    while queue:
-        path = queue.popleft()
-        current = path[-1]
-
-        for neighbor in graph[current]:
-            if neighbor in visited:
-                continue
-
-            new_path = path + [neighbor]
-
-            if neighbor == end:
-                return [start] + new_path
-
-            visited.add(neighbor)
-            queue.append(new_path)
+            frontier = next_frontier
 
     return None
 
 
+def _init_worker_graph(graph: Graph) -> None:
+    """Carrega o grafo uma vez por processo trabalhador."""
+    global _WORKER_GRAPH
+    _WORKER_GRAPH = graph
+
+
+def _expand_frontier_block(block: List[int]) -> List[tuple[int, int]]:
+    """Expande um bloco da fronteira atual e devolve arestas descobertas."""
+    if _WORKER_GRAPH is None:
+        raise RuntimeError("Grafo do worker nao foi inicializado.")
+
+    discovered_edges: List[tuple[int, int]] = []
+
+    for node in block:
+        for neighbor in _WORKER_GRAPH[node]:
+            discovered_edges.append((node, neighbor))
+
+    return discovered_edges
+
+
+def _reconstruct_path(
+    parents: dict[int, int | None],
+    end: int,
+) -> List[int]:
+    """Reconstrói o caminho mínimo a partir do mapa de pais."""
+    path: List[int] = []
+    current: int | None = end
+
+    while current is not None:
+        path.append(current)
+        current = parents[current]
+
+    path.reverse()
+    return path
+
+
 def _split_into_blocks(items: List[int], num_blocks: int) -> List[List[int]]:
-    """Divide uma lista em blocos aproximadamente equilibrados."""
+    """Divide a fronteira em blocos aproximadamente equilibrados."""
     if num_blocks <= 0:
         raise ValueError("num_blocks deve ser maior que zero.")
+
+    if not items:
+        return []
 
     block_size = ceil(len(items) / num_blocks)
     return [
